@@ -6,6 +6,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import FSInputFile, Message
 
 from .formatting import format_size
+from .video import probe_video
 
 log = logging.getLogger(__name__)
 
@@ -78,19 +79,42 @@ async def send_media(
     size: int,
     on_progress: UploadProgress | None = None,
 ) -> str:
+    suffix = Path(name).suffix.lower()
     kind = media_kind(name, size)
     caption = format_size(size)
-    log.info("upload_kind kind=%s", kind)
+    log.info(
+        "upload_kind kind=%s size=%s suffix=%s limit=%s",
+        kind,
+        size,
+        suffix,
+        MEDIA_MAX_BYTES,
+    )
+    thumbnail_path = None
+    video_info = None
+    if kind == "video":
+        thumbnail_path = path.with_name(f"{path.name}.thumb.jpg")
+        video_info = await probe_video(path, thumbnail_path)
     try:
         if kind == "photo":
             await message.answer_photo(upload(path, name, size, on_progress), caption=caption)
         elif kind == "animation":
             await message.answer_animation(upload(path, name, size, on_progress), caption=caption)
         elif kind == "video":
+            video_kwargs = {}
+            if video_info is not None:
+                if video_info.duration is not None:
+                    video_kwargs["duration"] = video_info.duration
+                if video_info.width is not None:
+                    video_kwargs["width"] = video_info.width
+                if video_info.height is not None:
+                    video_kwargs["height"] = video_info.height
+                if video_info.thumbnail is not None:
+                    video_kwargs["thumbnail"] = FSInputFile(video_info.thumbnail)
             await message.answer_video(
                 upload(path, name, size, on_progress),
                 caption=caption,
                 supports_streaming=True,
+                **video_kwargs,
             )
         elif kind == "audio":
             await message.answer_audio(upload(path, name, size, on_progress), caption=caption)
@@ -107,4 +131,7 @@ async def send_media(
         await message.answer_document(upload(path, name, size, on_progress), caption=caption)
         log.info("upload_fallback kind=%s document=true", kind)
         return "document"
+    finally:
+        if thumbnail_path is not None:
+            thumbnail_path.unlink(missing_ok=True)
     return kind

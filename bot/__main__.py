@@ -10,6 +10,7 @@ from aiogram.exceptions import TelegramNetworkError, TelegramUnauthorizedError
 from .config import ConfigError, load_config
 from .download import TRANSFER_TIMEOUT_SECONDS, Downloader, cleanup_temp_files
 from .handlers import DownloadGuard, router
+from .media import MEDIA_MAX_BYTES
 from .menu import MenuStore
 from .worker import WorkerClient
 
@@ -57,6 +58,7 @@ async def run() -> int:
         await session.close()
         return 1
     log.info("local_api_ok bot_id=%s username=%s", me.id, me.username or "")
+    log.info("media_limit bytes=%s", MEDIA_MAX_BYTES)
     worker_session = aiohttp.ClientSession(
         timeout=aiohttp.ClientTimeout(total=90, connect=10, sock_read=90)
     )

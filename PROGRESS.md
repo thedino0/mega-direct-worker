@@ -53,6 +53,8 @@ Last updated: 2026-10-26
 
 - Raised the native media ceiling from 50 MB to 2000 MB for animations, video, audio, and voice notes through the local Bot API.
 - Kept the 10 MB photo limit and sticker limits, with document fallback for oversized or unsupported media.
-- Verified 96 MB and 350 MB media selection and dispatch for MP4, MKV, MOV, WEBM, MP3, FLAC, OGG, OPUS, and GIF, including the 2000 MB boundary.
+- Verified 96 MB, 181 MB, and 350 MB media selection and dispatch for MP4, MKV, MOV, WEBM, MP3, FLAC, OGG, OPUS, and GIF, including the 2000 MB boundary.
+- Added video probing and JPEG thumbnail generation through `imageio-ffmpeg`, passing duration, width, height, and thumbnail to `sendVideo`.
+- Added startup media-limit logging and per-upload size, suffix, and limit diagnostics.
 - Re-ran media dispatch, media fallback, and phase 3 progress tests successfully; static checks passed.
-- Real local Bot API confirmation for the reported 96 MB and 350 MB files still requires deployment.
+- Real local Bot API confirmation for the reported 181 MB and 350 MB files still requires deployment and a process restart.
