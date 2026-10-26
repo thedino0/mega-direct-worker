@@ -12,9 +12,10 @@ import {
   readInput,
 } from './mega.js';
 import { htmlResponse } from './ui.js';
+import { handleTelegramWebhook } from './telegram.js';
 
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
     if (request.method === 'OPTIONS') {
       return optionsResponse();
     }
@@ -24,6 +25,9 @@ export default {
         status: 204,
         headers: { 'Cache-Control': 'public, max-age=86400' },
       });
+    }
+    if (request.method === 'POST' && requestUrl.pathname === '/telegram/webhook') {
+      return handleTelegramWebhook(request, env);
     }
     if (
       request.method === 'GET' &&

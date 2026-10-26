@@ -85,7 +85,7 @@ function compareEntries(a, b) {
   return 0;
 }
 
-function buildFolderIndex(nodes, linkKey, startHandle = null) {
+export function buildFolderIndex(nodes, linkKey, startHandle = null) {
   const publicRoot = findPublicRoot(nodes);
   const root = findFolderRoot(nodes, startHandle);
   const entries = new Map();
