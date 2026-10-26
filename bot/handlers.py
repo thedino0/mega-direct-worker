@@ -3,11 +3,12 @@ import logging
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, FSInputFile, Message
+from aiogram.types import CallbackQuery, Message
 
 from .config import Config
 from .download import Downloader, DownloadError, safe_filename
 from .formatting import format_size
+from .media import send_media
 from .menu import MenuError, MenuStore, clamp_page, menu_keyboard, menu_text
 from .privacy import extract_mega_link, redact_link
 from .worker import WorkerClient, WorkerError
@@ -179,11 +180,13 @@ async def on_pick(
         path = await downloader.fetch(file.url, file.name, file.size)
         await edit_status(status, "Uploading...")
         log.info("upload_start size=%s", file.size)
-        await callback.message.answer_document(
-            FSInputFile(path, filename=safe_filename(file.name)),
-            caption=format_size(file.size),
+        kind = await send_media(
+            callback.message,
+            path,
+            safe_filename(file.name),
+            file.size,
         )
-        log.info("upload_done size=%s", file.size)
+        log.info("upload_done size=%s kind=%s", file.size, kind)
         await edit_status(status, "Sent.")
     except DownloadError as exc:
         log.error("download_failed message=%s", exc)
