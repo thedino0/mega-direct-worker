@@ -38,9 +38,13 @@ Last updated: 2026-10-26
 - Verified download and upload progress updates, 2 GB default configuration, limit rejection, temp cleanup, and secret redaction with a fake local Bot API.
 - Re-ran phase 2, navigation, media, media fallback, real file download, and real folder download tests successfully.
 
-## Phase 4 - Hardening - planned
+## Phase 4 - Hardening - complete
 
-- Clean stale temp files on startup.
-- Re-resolve expired download URLs.
-- Add safer handling for rapid repeat callbacks and concurrent downloads.
-- Expand cleanup and failure-path tests.
+- Removed stale files from `TEMP_DIR` during startup and logged the cleanup count.
+- Stored the original MEGA link with each menu so expired download URLs can be resolved again.
+- Added one automatic URL refresh per download, with menu URL updates for later clicks.
+- Added a per-user download guard that rejects rapid repeat callbacks while a download is running.
+- Added clear failure messages when refreshed URLs expire or files disappear.
+- Verified startup cleanup, expired URL refresh, menu reuse after refresh, duplicate callback rejection, double-expiry cleanup, and temp cleanup after failures.
+- Re-ran phase 2, navigation, media, media fallback, phase 3 progress, real file, and real folder tests successfully.
+- Static checks passed with `ruff` and `python -m compileall`.

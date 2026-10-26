@@ -20,6 +20,28 @@ class DownloadError(RuntimeError):
     pass
 
 
+class DownloadExpired(DownloadError):
+    pass
+
+
+def cleanup_temp_files(directory: Path) -> int:
+    removed = 0
+    try:
+        entries = list(directory.iterdir())
+    except OSError as exc:
+        log.warning("temp_cleanup_scan_failed error=%s", type(exc).__name__)
+        return 0
+    for entry in entries:
+        try:
+            if entry.is_file() or entry.is_symlink():
+                entry.unlink()
+                removed += 1
+        except OSError as exc:
+            log.warning("temp_cleanup_failed name=%s error=%s", entry.name, type(exc).__name__)
+    log.info("temp_cleanup_startup removed=%s", removed)
+    return removed
+
+
 def safe_filename(value: object) -> str:
     name = Path(str(value or "file")).name
     name = "".join(char for char in name if char >= " " and char != "\x7f")
@@ -64,7 +86,7 @@ class Downloader:
         try:
             async with self._session.get(url, timeout=timeout) as response:
                 if response.status in {401, 403, 404, 410}:
-                    raise DownloadError("MEGA link expired or was denied. Send the link again.")
+                    raise DownloadExpired("Download URL expired.")
                 if response.status == 429:
                     raise DownloadError("MEGA is rate-limiting downloads. Try again shortly.")
                 if response.status != 200:

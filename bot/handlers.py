@@ -3,6 +3,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from pathlib import Path
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
@@ -10,10 +11,20 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
 
 from .config import Config
-from .download import Downloader, DownloadError, safe_filename
+from .download import Downloader, DownloadError, DownloadExpired, safe_filename
 from .formatting import format_size
 from .media import send_media
-from .menu import MenuError, MenuStore, clamp_page, menu_keyboard, menu_text
+from .menu import (
+    Menu,
+    MenuError,
+    MenuFile,
+    MenuStore,
+    clamp_page,
+    files_from_result,
+    find_file,
+    menu_keyboard,
+    menu_text,
+)
 from .privacy import extract_mega_link, redact_link
 from .worker import WorkerClient, WorkerError
 
@@ -58,6 +69,20 @@ def progress_text(stage: str, written: int, total: int, started: float) -> str:
             f"{format_size(speed)}/s"
         )
     return f"{stage} {format_size(written)}\n{format_size(speed)}/s"
+
+
+class DownloadGuard:
+    def __init__(self) -> None:
+        self._active: set[int] = set()
+
+    def acquire(self, user_id: int) -> bool:
+        if user_id in self._active:
+            return False
+        self._active.add(user_id)
+        return True
+
+    def release(self, user_id: int) -> None:
+        self._active.discard(user_id)
 
 
 class TransferProgress:
@@ -111,6 +136,72 @@ class TransferProgress:
                 log.warning("progress_failed error=%s", type(exc).__name__)
 
 
+async def fetch_with_progress(
+    downloader: Downloader,
+    file: MenuFile,
+    status: Message,
+) -> Path:
+    progress = TransferProgress(status, "Downloading", file.size, edit_status)
+    progress.start()
+    try:
+        return await downloader.fetch(
+            file.url,
+            file.name,
+            file.size,
+            on_progress=progress.update,
+        )
+    finally:
+        await progress.stop()
+
+
+async def refresh_file(
+    worker: WorkerClient,
+    menus: MenuStore,
+    menu: Menu,
+    file: MenuFile,
+    status: Message,
+) -> MenuFile:
+    log.info("download_refresh_start")
+    await edit_status(status, "Refreshing the download link...")
+    try:
+        result = await worker.resolve(menu.source_url)
+    except WorkerError as exc:
+        log.error("download_refresh_failed code=%s status=%s", exc.code, exc.status)
+        raise DownloadError(f"Could not refresh the link: {exc}") from exc
+    except Exception as exc:
+        log.error("download_refresh_failed unexpected=%s", type(exc).__name__)
+        raise DownloadError("Could not refresh the link. Try again.") from exc
+    try:
+        _, fresh_files = files_from_result(result)
+        match = find_file(fresh_files, file)
+        if match is None:
+            raise DownloadError("That file is no longer available.")
+        refreshed = menus.refresh(menu.token, menu.user_id, result)
+    except MenuError as exc:
+        raise DownloadError(str(exc)) from exc
+    if refreshed is None:
+        raise DownloadError("That menu expired. Send the link again.")
+    log.info("download_refresh_done")
+    return match
+
+
+async def download_file(
+    downloader: Downloader,
+    worker: WorkerClient,
+    menus: MenuStore,
+    menu: Menu,
+    file: MenuFile,
+    status: Message,
+) -> tuple[Path, MenuFile]:
+    try:
+        path = await fetch_with_progress(downloader, file, status)
+    except DownloadExpired:
+        log.info("download_expired")
+        file = await refresh_file(worker, menus, menu, file, status)
+        path = await fetch_with_progress(downloader, file, status)
+    return path, file
+
+
 @router.message(CommandStart())
 async def on_start(message: Message, config: Config) -> None:
     if not is_owner(message, config):
@@ -154,7 +245,7 @@ async def on_text(
         await edit_status(status, "Worker failed. Try again.")
         return
     try:
-        menu = menus.put(config.my_user_id, result)
+        menu = menus.put(config.my_user_id, result, link)
     except MenuError as exc:
         log.error("menu_failed reason=%s", exc)
         await edit_status(status, str(exc))
@@ -210,6 +301,8 @@ async def on_pick(
     config: Config,
     menus: MenuStore,
     downloader: Downloader,
+    worker: WorkerClient,
+    guard: DownloadGuard,
 ) -> None:
     if not is_owner_callback(callback, config):
         await callback.answer()
@@ -240,22 +333,23 @@ async def on_pick(
             show_alert=True,
         )
         return
-    await callback.answer()
-    status = await callback.message.answer(f"Downloading {file.name}...")
+    if not guard.acquire(config.my_user_id):
+        await callback.answer("A download is already running.", show_alert=True)
+        return
+    status = None
     path = None
     try:
+        await callback.answer()
+        status = await callback.message.answer(f"Downloading {file.name}...")
         log.info("download_start size=%s", file.size)
-        download_progress = TransferProgress(status, "Downloading", file.size, edit_status)
-        download_progress.start()
-        try:
-            path = await downloader.fetch(
-                file.url,
-                file.name,
-                file.size,
-                on_progress=download_progress.update,
-            )
-        finally:
-            await download_progress.stop()
+        path, file = await download_file(
+            downloader,
+            worker,
+            menus,
+            menu,
+            file,
+            status,
+        )
         upload_size = path.stat().st_size
         await edit_status(status, f"Uploading {format_size(upload_size)}...")
         log.info("upload_start size=%s", upload_size)
@@ -275,11 +369,14 @@ async def on_pick(
         await edit_status(status, "Sent.")
     except DownloadError as exc:
         log.error("download_failed message=%s", exc)
-        await edit_status(status, f"Download failed: {exc}")
+        if status is not None:
+            await edit_status(status, f"Download failed: {exc}")
     except Exception as exc:
         log.error("upload_failed error=%s", type(exc).__name__)
-        await edit_status(status, "Upload failed. Try again.")
+        if status is not None:
+            await edit_status(status, "Upload failed. Try again.")
     finally:
+        guard.release(config.my_user_id)
         if path is not None:
             path.unlink(missing_ok=True)
             log.info("temp_cleanup")

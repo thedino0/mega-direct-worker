@@ -8,8 +8,8 @@ from aiogram.client.telegram import TelegramAPIServer
 from aiogram.exceptions import TelegramNetworkError, TelegramUnauthorizedError
 
 from .config import ConfigError, load_config
-from .download import TRANSFER_TIMEOUT_SECONDS, Downloader
-from .handlers import router
+from .download import TRANSFER_TIMEOUT_SECONDS, Downloader, cleanup_temp_files
+from .handlers import DownloadGuard, router
 from .menu import MenuStore
 from .worker import WorkerClient
 
@@ -36,6 +36,7 @@ async def run() -> int:
     except OSError:
         log.error("temp_dir_failed path=%s", config.temp_dir)
         return 1
+    cleanup_temp_files(config.temp_dir)
     session = AiohttpSession(
         api=TelegramAPIServer.from_base(config.local_api_url),
         timeout=TRANSFER_TIMEOUT_SECONDS,
@@ -69,6 +70,7 @@ async def run() -> int:
     )
     downloader = Downloader(config, download_session)
     menus = MenuStore()
+    guard = DownloadGuard()
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
     try:
@@ -78,6 +80,7 @@ async def run() -> int:
             worker=worker,
             downloader=downloader,
             menus=menus,
+            guard=guard,
         )
     finally:
         await worker.close()
