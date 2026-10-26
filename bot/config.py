@@ -22,6 +22,7 @@ class Config:
     api_hash: str
     local_api_url: str
     temp_dir: Path
+    max_file_bytes: int = 100 * 1024 * 1024
 
     @property
     def worker_resolve_url(self) -> str:
@@ -73,6 +74,7 @@ def load_config() -> Config:
     local_api_url = http_url("LOCAL_API_URL", required("LOCAL_API_URL"))
     temp_label = os.getenv("TEMP_DIR", "").strip() or "./tmp"
     temp_dir = Path(temp_label).expanduser().resolve()
+    max_mb = positive_int("MAX_DOWNLOAD_MB", os.getenv("MAX_DOWNLOAD_MB", "").strip() or "100")
     return Config(
         bot_token=bot_token,
         my_user_id=my_user_id,
@@ -82,4 +84,5 @@ def load_config() -> Config:
         api_hash=api_hash,
         local_api_url=local_api_url,
         temp_dir=temp_dir,
+        max_file_bytes=max_mb * 1024 * 1024,
     )

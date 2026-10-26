@@ -8,7 +8,9 @@ from aiogram.client.telegram import TelegramAPIServer
 from aiogram.exceptions import TelegramNetworkError, TelegramUnauthorizedError
 
 from .config import ConfigError, load_config
+from .download import Downloader
 from .handlers import router
+from .menu import MenuStore
 from .worker import WorkerClient
 
 log = logging.getLogger(__name__)
@@ -58,12 +60,24 @@ async def run() -> int:
         timeout=aiohttp.ClientTimeout(total=90, connect=10, sock_read=90)
     )
     worker = WorkerClient(config, worker_session)
+    download_session = aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=900, connect=15, sock_read=90)
+    )
+    downloader = Downloader(config, download_session)
+    menus = MenuStore()
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
     try:
-        await dispatcher.start_polling(bot, config=config, worker=worker)
+        await dispatcher.start_polling(
+            bot,
+            config=config,
+            worker=worker,
+            downloader=downloader,
+            menus=menus,
+        )
     finally:
         await worker.close()
+        await downloader.close()
     return 0
 
 
