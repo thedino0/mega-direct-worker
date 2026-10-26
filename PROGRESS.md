@@ -27,11 +27,16 @@ Last updated: 2026-10-26
 - Verified no direct MEGA URLs, link keys, worker keys, or bot tokens appear in bot logs.
 - Static checks passed with `ruff` and `python -m compileall`.
 
-## Phase 3 - Large files and download progress - planned
+## Phase 3 - Large files and live progress - complete
 
-- Raise the transfer target to 2 GB through the local Bot API.
-- Add live progress updates during download and upload.
-- Keep pagination and selection behavior unchanged.
+- Raised the default transfer cap to 2000 MB through the local Bot API.
+- Rejected `MAX_DOWNLOAD_MB` values above 2000 and updated the env template.
+- Added throttled status edits with percentage, transferred size, and speed during downloads.
+- Added streamed upload progress through a progress-aware input file and the same status reporter.
+- Increased Bot API and download timeouts to two hours for large transfers.
+- Kept pagination, file selection, media dispatch, document fallback, and temp cleanup unchanged.
+- Verified download and upload progress updates, 2 GB default configuration, limit rejection, temp cleanup, and secret redaction with a fake local Bot API.
+- Re-ran phase 2, navigation, media, media fallback, real file download, and real folder download tests successfully.
 
 ## Phase 4 - Hardening - planned
 

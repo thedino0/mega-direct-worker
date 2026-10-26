@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from aiogram.exceptions import TelegramBadRequest
@@ -17,6 +18,8 @@ STICKER_LIMITS = {".webp": 512 * 1024, ".tgs": 64 * 1024}
 
 PHOTO_MAX_BYTES = 10 * 1024 * 1024
 MEDIA_MAX_BYTES = 50 * 1024 * 1024
+UPLOAD_CHUNK_BYTES = 1024 * 1024
+UploadProgress = Callable[[int, int], Awaitable[None]]
 
 
 def media_kind(name: str, size: int) -> str:
@@ -37,34 +40,71 @@ def media_kind(name: str, size: int) -> str:
     return "document"
 
 
-def upload(path: Path, name: str) -> FSInputFile:
-    return FSInputFile(path, filename=name)
+class ProgressInputFile(FSInputFile):
+    def __init__(
+        self,
+        path: Path,
+        name: str,
+        size: int,
+        on_progress: UploadProgress,
+    ):
+        super().__init__(path, filename=name, chunk_size=UPLOAD_CHUNK_BYTES)
+        self._size = max(0, size)
+        self._on_progress = on_progress
+        self._written = 0
+
+    async def read(self, bot):
+        async for chunk in super().read(bot):
+            self._written += len(chunk)
+            await self._on_progress(self._written, self._size)
+            yield chunk
 
 
-async def send_media(message: Message, path: Path, name: str, size: int) -> str:
+def upload(
+    path: Path,
+    name: str,
+    size: int,
+    on_progress: UploadProgress | None,
+) -> FSInputFile:
+    if on_progress is None:
+        return FSInputFile(path, filename=name, chunk_size=UPLOAD_CHUNK_BYTES)
+    return ProgressInputFile(path, name, size, on_progress)
+
+
+async def send_media(
+    message: Message,
+    path: Path,
+    name: str,
+    size: int,
+    on_progress: UploadProgress | None = None,
+) -> str:
     kind = media_kind(name, size)
     caption = format_size(size)
     log.info("upload_kind kind=%s", kind)
     try:
         if kind == "photo":
-            await message.answer_photo(upload(path, name), caption=caption)
+            await message.answer_photo(upload(path, name, size, on_progress), caption=caption)
         elif kind == "animation":
-            await message.answer_animation(upload(path, name), caption=caption)
+            await message.answer_animation(upload(path, name, size, on_progress), caption=caption)
         elif kind == "video":
-            await message.answer_video(upload(path, name), caption=caption, supports_streaming=True)
+            await message.answer_video(
+                upload(path, name, size, on_progress),
+                caption=caption,
+                supports_streaming=True,
+            )
         elif kind == "audio":
-            await message.answer_audio(upload(path, name), caption=caption)
+            await message.answer_audio(upload(path, name, size, on_progress), caption=caption)
         elif kind == "voice":
-            await message.answer_voice(upload(path, name), caption=caption)
+            await message.answer_voice(upload(path, name, size, on_progress), caption=caption)
         elif kind == "sticker":
-            await message.answer_sticker(upload(path, name))
+            await message.answer_sticker(upload(path, name, size, on_progress))
         else:
-            await message.answer_document(upload(path, name), caption=caption)
+            await message.answer_document(upload(path, name, size, on_progress), caption=caption)
     except TelegramBadRequest as exc:
         if kind == "document":
             raise
         log.warning("upload_rejected kind=%s error=%s", kind, exc)
-        await message.answer_document(upload(path, name), caption=caption)
+        await message.answer_document(upload(path, name, size, on_progress), caption=caption)
         log.info("upload_fallback kind=%s document=true", kind)
         return "document"
     return kind

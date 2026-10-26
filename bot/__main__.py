@@ -8,7 +8,7 @@ from aiogram.client.telegram import TelegramAPIServer
 from aiogram.exceptions import TelegramNetworkError, TelegramUnauthorizedError
 
 from .config import ConfigError, load_config
-from .download import Downloader
+from .download import TRANSFER_TIMEOUT_SECONDS, Downloader
 from .handlers import router
 from .menu import MenuStore
 from .worker import WorkerClient
@@ -38,7 +38,7 @@ async def run() -> int:
         return 1
     session = AiohttpSession(
         api=TelegramAPIServer.from_base(config.local_api_url),
-        timeout=30,
+        timeout=TRANSFER_TIMEOUT_SECONDS,
     )
     bot = Bot(token=config.bot_token, session=session)
     try:
@@ -61,7 +61,11 @@ async def run() -> int:
     )
     worker = WorkerClient(config, worker_session)
     download_session = aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(total=900, connect=15, sock_read=90)
+        timeout=aiohttp.ClientTimeout(
+            total=TRANSFER_TIMEOUT_SECONDS,
+            connect=15,
+            sock_read=120,
+        )
     )
     downloader = Downloader(config, download_session)
     menus = MenuStore()
