@@ -5,3 +5,8 @@ node_modules/
 .env.*
 .DS_Store
 *.log
+__pycache__/
+*.py[cod]
+.venv/
+bot/tmp/
+/tmp/
