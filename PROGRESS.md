@@ -48,3 +48,11 @@ Last updated: 2026-10-26
 - Verified startup cleanup, expired URL refresh, menu reuse after refresh, duplicate callback rejection, double-expiry cleanup, and temp cleanup after failures.
 - Re-ran phase 2, navigation, media, media fallback, phase 3 progress, real file, and real folder tests successfully.
 - Static checks passed with `ruff` and `python -m compileall`.
+
+## Large media delivery fix - verified locally
+
+- Raised the native media ceiling from 50 MB to 2000 MB for animations, video, audio, and voice notes through the local Bot API.
+- Kept the 10 MB photo limit and sticker limits, with document fallback for oversized or unsupported media.
+- Verified 96 MB and 350 MB media selection and dispatch for MP4, MKV, MOV, WEBM, MP3, FLAC, OGG, OPUS, and GIF, including the 2000 MB boundary.
+- Re-ran media dispatch, media fallback, and phase 3 progress tests successfully; static checks passed.
+- Real local Bot API confirmation for the reported 96 MB and 350 MB files still requires deployment.

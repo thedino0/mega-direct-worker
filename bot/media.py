@@ -17,7 +17,7 @@ VOICE_EXTENSIONS = frozenset({".ogg", ".opus", ".oga"})
 STICKER_LIMITS = {".webp": 512 * 1024, ".tgs": 64 * 1024}
 
 PHOTO_MAX_BYTES = 10 * 1024 * 1024
-MEDIA_MAX_BYTES = 50 * 1024 * 1024
+MEDIA_MAX_BYTES = 2000 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 1024 * 1024
 UploadProgress = Callable[[int, int], Awaitable[None]]
 
