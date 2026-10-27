@@ -3,9 +3,9 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import FSInputFile, Message
+from aiogram.types import FSInputFile, InlineKeyboardMarkup, Message
 
-from .formatting import format_size
+from .formatting import file_caption
 from .video import probe_video
 
 log = logging.getLogger(__name__)
@@ -78,10 +78,12 @@ async def send_media(
     name: str,
     size: int,
     on_progress: UploadProgress | None = None,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    caption: str | None = None,
 ) -> str:
     suffix = Path(name).suffix.lower()
     kind = media_kind(name, size)
-    caption = format_size(size)
+    caption_text = caption if caption is not None else file_caption(name)
     log.info(
         "upload_kind kind=%s size=%s suffix=%s limit=%s",
         kind,
@@ -96,9 +98,19 @@ async def send_media(
         video_info = await probe_video(path, thumbnail_path)
     try:
         if kind == "photo":
-            await message.answer_photo(upload(path, name, size, on_progress), caption=caption)
+            await message.answer_photo(
+                upload(path, name, size, on_progress),
+                caption=caption_text,
+                parse_mode="HTML",
+                reply_markup=reply_markup,
+            )
         elif kind == "animation":
-            await message.answer_animation(upload(path, name, size, on_progress), caption=caption)
+            await message.answer_animation(
+                upload(path, name, size, on_progress),
+                caption=caption_text,
+                parse_mode="HTML",
+                reply_markup=reply_markup,
+            )
         elif kind == "video":
             video_kwargs = {}
             if video_info is not None:
@@ -112,23 +124,46 @@ async def send_media(
                     video_kwargs["thumbnail"] = FSInputFile(video_info.thumbnail)
             await message.answer_video(
                 upload(path, name, size, on_progress),
-                caption=caption,
+                caption=caption_text,
+                parse_mode="HTML",
                 supports_streaming=True,
+                reply_markup=reply_markup,
                 **video_kwargs,
             )
         elif kind == "audio":
-            await message.answer_audio(upload(path, name, size, on_progress), caption=caption)
+            await message.answer_audio(
+                upload(path, name, size, on_progress),
+                caption=caption_text,
+                parse_mode="HTML",
+                reply_markup=reply_markup,
+            )
         elif kind == "voice":
-            await message.answer_voice(upload(path, name, size, on_progress), caption=caption)
+            await message.answer_voice(
+                upload(path, name, size, on_progress),
+                reply_markup=reply_markup,
+            )
         elif kind == "sticker":
-            await message.answer_sticker(upload(path, name, size, on_progress))
+            await message.answer_sticker(
+                upload(path, name, size, on_progress),
+                reply_markup=reply_markup,
+            )
         else:
-            await message.answer_document(upload(path, name, size, on_progress), caption=caption)
+            await message.answer_document(
+                upload(path, name, size, on_progress),
+                caption=caption_text,
+                parse_mode="HTML",
+                reply_markup=reply_markup,
+            )
     except TelegramBadRequest as exc:
         if kind == "document":
             raise
         log.warning("upload_rejected kind=%s error=%s", kind, exc)
-        await message.answer_document(upload(path, name, size, on_progress), caption=caption)
+        await message.answer_document(
+            upload(path, name, size, on_progress),
+            caption=caption_text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
         log.info("upload_fallback kind=%s document=true", kind)
         return "document"
     finally:

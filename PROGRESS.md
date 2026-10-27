@@ -26,6 +26,7 @@ Last updated: 2026-10-27
 - Verified real MEGA byte transfer through the worker for a 73 KB file and a 13.8 MB folder file; decryption was not applied until the later payload fix.
 - Verified no direct MEGA URLs, link keys, worker keys, or bot tokens appear in bot logs.
 - Static checks passed with `ruff` and `python -m compileall`.
+- Deployed the Update 2 bot files to `/home/azure/megabot` on the VPS and restarted the bot; startup validation and local Bot API connectivity passed.
 
 ## Phase 3 - Large files and live progress - complete
 
@@ -48,6 +49,7 @@ Last updated: 2026-10-27
 - Verified startup cleanup, expired URL refresh, menu reuse after refresh, duplicate callback rejection, double-expiry cleanup, and temp cleanup after failures.
 - Re-ran phase 2, navigation, media, media fallback, phase 3 progress, real file, and real folder tests successfully.
 - Static checks passed with `ruff` and `python -m compileall`.
+- Deployed the Update 2 bot files to `/home/azure/megabot` on the VPS and restarted the bot; startup validation and local Bot API connectivity passed.
 
 ## Large media delivery fix - verified locally
 
@@ -69,3 +71,45 @@ Last updated: 2026-10-27
 - Verified the reported 136,803,541-byte MP4 decrypts and probes as a 730-second 1280x720 video with a JPEG thumbnail on the VPS.
 - Verified the full bot flow on the VPS with a fake Telegram API: real folder link, key resolution, decryption, 33 MB video upload, duration/thumbnail fields, and temp cleanup.
 - Existing synthetic media E2E fixtures use keyless fake links and must be updated before reuse.
+
+## Update 1 - Premium UI and folder tree - implemented and locally verified
+
+- Replaced the flat folder picker with a real tree derived from worker file paths; folders and files are rendered as hierarchical entries.
+- Added same-message folder navigation, Back, Prev/Next pagination, six entries per page, recursive folder statistics, and safe root-boundary handling.
+- Added file buttons with `📄 Truncated Name (Size)` labels capped at 35 name characters while preserving the extension; folder buttons use `📂 Name`.
+- Added a premium HTML File Resolved screen with name, size, type, a download button, and a Back button that returns to the file's containing folder.
+- Updated every bot message to HTML parse mode with escaping for file names, paths, and errors.
+- Added exact HTML file captions to delivered media.
+- Replaced the status text with a live progress bar, percentage, speed, ETA, transferred size, and elapsed time; the same message is used for download and upload.
+- Added a cancellation registry and Cancel button; cancellation kills the transfer task, removes the progress message, and cleans any partial temp file.
+- Added successful transfer auto-delete for the File Resolved/menu and progress messages, leaving only the delivered file.
+- Added failure auto-delete after ten seconds, with clear Download Failed and Upload Failed messages and removed controls.
+- Verified tree navigation, pagination, file info, Back, long labels, progress, caption HTML, final delete button, success auto-delete, cancel cleanup, and error auto-delete with fake Telegram/worker end-to-end tests.
+- Verified the decryption path remains active in the updated flow; the worker was not changed.
+- Deployed the updated bot files to `/home/azure/megabot` on the VPS and restarted the bot; startup validation and local Bot API connectivity passed.
+
+## Update 2 - Folder batch download - implemented and locally verified
+
+- Added a `📥 Download All (N)` button inside folder views; N includes all files in the current folder and its subfolders.
+- Batch downloads run sequentially, edit one pinned status message, and keep it pinned until every selected file has been processed.
+- The pinned status shows the folder name, current file position, uploaded/failed/skipped counts, aggregate uploaded size, and per-file progress.
+- After the batch, the status is unpinned and deleted, and a final HTML summary is sent with folder name, total files, uploaded/failed/skipped counts, uploaded/total size, elapsed time, and average speed.
+- Per-file failures are counted and the batch continues; oversized files are skipped and reported in the final summary.
+- Cancelling a batch stops the active transfer, cleans temp files, unpins/deletes the status, and leaves the folder menu available.
+- Removed the inline `🗑 Delete File` button and its callback handler from delivered media.
+- Verified recursive batch selection, pin/unpin lifecycle, three sequential uploads, progress edits, final summary, temp cleanup, no delete-button markup, and single-file cancellation/error regressions with fake Telegram/worker E2E tests.
+- Static checks passed with `ruff` and `python -m compileall`.
+- Deployed the Update 2 bot files to `/home/azure/megabot` on the VPS and restarted the bot; startup validation and local Bot API connectivity passed.
+
+## Update 3 - Large folder fallback - implemented and locally verified
+
+- Raised the Worker source caps from 500 to 2,000 files and 5,000 to 10,000 nodes; rebuilt `mega-direct-worker.js`.
+- Raised the bot Worker response allowance to 8 MB and the direct MEGA resolver node/response caps to 20,000 nodes and 32 MB.
+- Added a bot-side fallback for Worker `folder_too_large` responses: the bot resolves folder nodes directly from MEGA, decrypts names/keys, fetches download URLs in 100-file batches, and builds the same menu result format.
+- Populated the existing MEGA key cache from fallback results so downloads and batch runs do not fetch the folder node list again.
+- Applied the fallback to initial link resolution, expired-download refresh, and long batch menu refresh paths.
+- Verified a real public folder resolves directly with downloadable URLs and a `206` range response.
+- Verified an end-to-end fallback run where the fake Worker returns `413 folder_too_large` and the bot still builds the folder menu with `Download All`.
+- Existing tree, single-download, batch, cancel, and error E2Es still pass.
+- Deployed the bot-side fallback to `/home/azure/megabot` and restarted the bot; startup validation and local Bot API connectivity passed.
+- The live Worker still has the old 500-file cap; its rebuilt bundle with the higher cap is ready but has not been deployed. The deployed bot bypasses the cap through the direct fallback.

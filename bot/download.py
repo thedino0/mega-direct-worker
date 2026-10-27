@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 import time
@@ -122,6 +123,10 @@ class Downloader:
                             if percent >= next_percent:
                                 log.info("download_progress percent=%s bytes=%s", min(percent, 100), written)
                                 next_percent = (percent // 10 + 1) * 10
+        except asyncio.CancelledError:
+            path.unlink(missing_ok=True)
+            log.info("download_cancelled")
+            raise
         except DownloadError:
             path.unlink(missing_ok=True)
             raise

@@ -6,7 +6,7 @@ import aiohttp
 from .config import Config
 
 log = logging.getLogger(__name__)
-MAX_RESPONSE_BYTES = 1_500_000
+MAX_RESPONSE_BYTES = 8_000_000
 
 
 class WorkerError(RuntimeError):

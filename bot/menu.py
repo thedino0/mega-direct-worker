@@ -1,10 +1,19 @@
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from secrets import token_urlsafe
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from .formatting import as_size, clean_text, format_size
+from .formatting import (
+    BUTTON_NAME_CHARS,
+    DIVIDER,
+    as_size,
+    clean_text,
+    compact_size,
+    format_size,
+    html_text,
+    truncate_filename,
+)
 
 PAGE_SIZE = 6
 MAX_MENUS = 500
@@ -26,6 +35,16 @@ class MenuFile:
 
 
 @dataclass(frozen=True, slots=True)
+class MenuNode:
+    id: int
+    name: str
+    path: str
+    parent_id: int | None
+    folders: tuple[int, ...]
+    files: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class Menu:
     token: str
     user_id: int
@@ -35,6 +54,16 @@ class Menu:
     files: tuple[MenuFile, ...]
     expires_at: float
     source_url: str
+    tree: tuple[MenuNode, ...] = field(default_factory=tuple)
+
+
+@dataclass(slots=True)
+class _BuildNode:
+    name: str
+    path: str
+    parent_id: int | None
+    folders: dict[str, int]
+    files: list[int]
 
 
 def files_from_result(result: dict) -> tuple[str, tuple[MenuFile, ...]]:
@@ -75,6 +104,105 @@ def files_from_result(result: dict) -> tuple[str, tuple[MenuFile, ...]]:
     else:
         raise MenuError("Worker returned an unexpected result.")
     return kind, tuple(files)
+
+
+def build_tree(files: tuple[MenuFile, ...]) -> tuple[MenuNode, ...]:
+    nodes: list[_BuildNode] = [
+        _BuildNode(name="", path="", parent_id=None, folders={}, files=[])
+    ]
+    for index, file in enumerate(files):
+        parts = [part for part in file.path.split("/") if part]
+        parent = 0
+        current_path = ""
+        for raw_part in parts[:-1]:
+            part = clean_text(raw_part)
+            current_path = f"{current_path}/{part}" if current_path else part
+            child_id = nodes[parent].folders.get(part)
+            if child_id is None:
+                child_id = len(nodes)
+                nodes.append(
+                    _BuildNode(
+                        name=part,
+                        path=current_path,
+                        parent_id=parent,
+                        folders={},
+                        files=[],
+                    )
+                )
+                nodes[parent].folders[part] = child_id
+            parent = child_id
+        nodes[parent].files.append(index)
+    tree: list[MenuNode] = []
+    for node_id, node in enumerate(nodes):
+        folder_ids = tuple(
+            sorted(node.folders.values(), key=lambda item: nodes[item].name.casefold())
+        )
+        file_ids = tuple(
+            sorted(node.files, key=lambda item: files[item].name.casefold())
+        )
+        tree.append(
+            MenuNode(
+                id=node_id,
+                name=node.name,
+                path=node.path,
+                parent_id=node.parent_id,
+                folders=folder_ids,
+                files=file_ids,
+            )
+        )
+    return tuple(tree)
+
+
+def tree_nodes(menu: Menu) -> tuple[MenuNode, ...]:
+    return menu.tree or build_tree(menu.files)
+
+
+def node_by_id(menu: Menu, node_id: int) -> MenuNode | None:
+    nodes = tree_nodes(menu)
+    if node_id < 0 or node_id >= len(nodes):
+        return None
+    return nodes[node_id]
+
+
+def file_parent_id(menu: Menu, index: int) -> int:
+    for node in tree_nodes(menu):
+        if index in node.files:
+            return node.id
+    return 0
+
+
+def folder_stats(menu: Menu, node_id: int) -> tuple[int, int]:
+    nodes = tree_nodes(menu)
+    if node_id < 0 or node_id >= len(nodes):
+        return 0, 0
+
+    def visit(current_id: int) -> tuple[int, int]:
+        node = nodes[current_id]
+        count = len(node.files)
+        size = sum(menu.files[index].size for index in node.files)
+        for child_id in node.folders:
+            child_count, child_size = visit(child_id)
+            count += child_count
+            size += child_size
+        return count, size
+
+    return visit(node_id)
+
+
+def folder_file_indices(menu: Menu, node_id: int) -> tuple[int, ...]:
+    nodes = tree_nodes(menu)
+    if node_id < 0 or node_id >= len(nodes):
+        return ()
+    indices: list[int] = []
+
+    def visit(current_id: int) -> None:
+        node = nodes[current_id]
+        indices.extend(node.files)
+        for child_id in node.folders:
+            visit(child_id)
+
+    visit(node_id)
+    return tuple(indices)
 
 
 def find_file(files: tuple[MenuFile, ...], target: MenuFile) -> MenuFile | None:
@@ -132,6 +260,7 @@ class MenuStore:
             files=files,
             expires_at=now + self._ttl_for(result),
             source_url=source_url,
+            tree=build_tree(files),
         )
         self._items[token] = menu
         return menu
@@ -152,6 +281,7 @@ class MenuStore:
         refreshed = replace(
             menu,
             files=tuple(updated),
+            tree=build_tree(tuple(updated)),
             total=as_size(result.get("size")) or menu.total,
             expires_at=now + self._ttl_for(result),
         )
@@ -167,67 +297,161 @@ class MenuStore:
         return menu
 
 
-def page_count(menu: Menu) -> int:
-    return max(1, (len(menu.files) + PAGE_SIZE - 1) // PAGE_SIZE)
+def entry_count(menu: Menu, node_id: int = 0) -> int:
+    node = node_by_id(menu, node_id)
+    if node is None:
+        return 0
+    return len(node.folders) + len(node.files)
 
 
-def clamp_page(menu: Menu, page: int) -> int:
-    return max(0, min(page, page_count(menu) - 1))
+def page_count(menu: Menu, node_id: int = 0) -> int:
+    return max(1, (entry_count(menu, node_id) + PAGE_SIZE - 1) // PAGE_SIZE)
 
 
-def menu_text(menu: Menu, page: int = 0) -> str:
-    if menu.kind == "file":
-        file = menu.files[0]
-        return "\n".join(
-            [
-                "File",
-                f"Name: {file.name}",
-                f"Size: {format_size(file.size)}",
-                f"Type: {file.ext}",
-            ]
-        )
-    current = clamp_page(menu, page)
-    total_pages = page_count(menu)
+def clamp_page(menu: Menu, page: int, node_id: int = 0) -> int:
+    return max(0, min(page, page_count(menu, node_id) - 1))
+
+
+def folder_name(menu: Menu, node: MenuNode) -> str:
+    return node.name or menu.name or "Folder"
+
+
+def file_info_text(file: MenuFile) -> str:
     return "\n".join(
         [
-            f"Folder: {menu.name}",
-            f"Files: {len(menu.files)}",
-            f"Total: {format_size(menu.total)}",
-            f"Page {current + 1}/{total_pages}",
-            "Choose a file below.",
+            DIVIDER,
+            "✦ <b>File Resolved</b>",
+            DIVIDER,
+            f"📄 <b>Name:</b> <code>{html_text(file.name)}</code>",
+            f"⚖️ <b>Size:</b> <code>{format_size(file.size)}</code>",
+            f"🗂 <b>Type:</b> <code>{html_text(file.ext)}</code>",
+            DIVIDER,
         ]
     )
 
 
-def menu_keyboard(menu: Menu, page: int = 0) -> InlineKeyboardMarkup:
+def folder_text(menu: Menu, node_id: int = 0, page: int = 0) -> str:
+    node = node_by_id(menu, node_id)
+    if node is None:
+        return "<b>That folder is no longer available.</b>"
+    current = clamp_page(menu, page, node_id)
+    total_pages = page_count(menu, node_id)
+    _, size = folder_stats(menu, node_id)
+    lines = [
+        DIVIDER,
+        "✦ <b>Folder Contents</b>",
+        DIVIDER,
+        f"📂 <b>Name:</b> <code>{html_text(folder_name(menu, node))}</code>",
+        f"📁 <b>Folders:</b> <code>{len(node.folders)}</code>",
+        f"📄 <b>Files:</b> <code>{len(node.files)}</code>",
+        f"⚖️ <b>Size:</b> <code>{format_size(size)}</code>",
+        DIVIDER,
+        f"<b>Page</b> <code>{current + 1}/{total_pages}</code>",
+    ]
+    return "\n".join(lines)
+
+
+def menu_text(menu: Menu, page: int = 0, node_id: int = 0) -> str:
     if menu.kind == "file":
-        file = menu.files[0]
-        label = short(f"Download ({format_size(file.size)})", MAX_BUTTON_CHARS)
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text=label, callback_data=f"f:{menu.token}:0")]
-            ]
-        )
-    current = clamp_page(menu, page)
-    total_pages = page_count(menu)
+        return file_info_text(menu.files[0])
+    return folder_text(menu, node_id, page)
+
+
+def back_button(menu: Menu, node: MenuNode) -> InlineKeyboardButton | None:
+    if node.parent_id is None:
+        return None
+    return InlineKeyboardButton(
+        text="🔙 Back",
+        callback_data=f"n:{menu.token}:{node.parent_id}:0",
+    )
+
+
+def file_info_keyboard(menu: Menu, index: int) -> InlineKeyboardMarkup:
+    file = menu.files[index]
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"⬇️ Download ({compact_size(file.size)})",
+                callback_data=f"f:{menu.token}:{index}",
+            )
+        ]
+    ]
+    if menu.kind == "folder":
+        parent = node_by_id(menu, file_parent_id(menu, index))
+        if parent is not None:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text="🔙 Back",
+                        callback_data=f"n:{menu.token}:{parent.id}:0",
+                    )
+                ]
+            )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def menu_keyboard(menu: Menu, page: int = 0, node_id: int = 0) -> InlineKeyboardMarkup:
+    if menu.kind == "file":
+        return file_info_keyboard(menu, 0)
+    node = node_by_id(menu, node_id)
+    if node is None:
+        return InlineKeyboardMarkup(inline_keyboard=[])
+    nodes = tree_nodes(menu)
+    entries: list[tuple[bool, int]] = [
+        (True, child_id) for child_id in node.folders
+    ] + [(False, index) for index in node.files]
+    current = clamp_page(menu, page, node_id)
+    total_pages = page_count(menu, node_id)
     start = current * PAGE_SIZE
-    end = min(start + PAGE_SIZE, len(menu.files))
+    end = min(start + PAGE_SIZE, len(entries))
     rows: list[list[InlineKeyboardButton]] = []
-    for index in range(start, end):
-        file = menu.files[index]
-        label = short(f"{index + 1}. {file.path} ({format_size(file.size)})", MAX_BUTTON_CHARS)
+    for is_folder, item in entries[start:end]:
+        if is_folder:
+            label = f"📂 {truncate_filename(nodes[item].name, BUTTON_NAME_CHARS)}"
+            callback_data = f"n:{menu.token}:{item}:0"
+        else:
+            file = menu.files[item]
+            label = (
+                f"📄 {truncate_filename(file.name, BUTTON_NAME_CHARS)} "
+                f"({compact_size(file.size)})"
+            )
+            callback_data = f"i:{menu.token}:{item}"
         rows.append(
-            [InlineKeyboardButton(text=label, callback_data=f"f:{menu.token}:{index}")]
+            [
+                InlineKeyboardButton(
+                    text=label[:MAX_BUTTON_CHARS],
+                    callback_data=callback_data,
+                )
+            ]
         )
     navigation: list[InlineKeyboardButton] = []
     if current > 0:
         navigation.append(
-            InlineKeyboardButton(text="Prev", callback_data=f"p:{menu.token}:{current - 1}")
+            InlineKeyboardButton(
+                text="⬅️ Prev",
+                callback_data=f"n:{menu.token}:{node_id}:{current - 1}",
+            )
         )
     if current < total_pages - 1:
         navigation.append(
-            InlineKeyboardButton(text="Next", callback_data=f"p:{menu.token}:{current + 1}")
+            InlineKeyboardButton(
+                text="Next ➡️",
+                callback_data=f"n:{menu.token}:{node_id}:{current + 1}",
+            )
         )
     if navigation:
         rows.append(navigation)
+    file_count, _ = folder_stats(menu, node_id)
+    if file_count:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"📥 Download All ({file_count})",
+                    callback_data=f"a:{menu.token}:{node_id}",
+                )
+            ]
+        )
+    button = back_button(menu, node)
+    if button is not None:
+        rows.append([button])
     return InlineKeyboardMarkup(inline_keyboard=rows)

@@ -17,9 +17,11 @@ log = logging.getLogger(__name__)
 MEGA_API = "https://g.api.mega.co.nz/cs"
 ALLOWED_HOSTS = frozenset({"mega.nz", "mega.io", "mega.co.nz"})
 HANDLE_RE = re.compile(r"^[A-Za-z0-9_-]{8}$")
-MAX_FOLDER_NODES = 5000
+MAX_FOLDER_NODES = 20000
 MAX_FOLDER_DEPTH = 64
-MAX_API_BYTES = 8 * 1024 * 1024
+MAX_API_BYTES = 32 * 1024 * 1024
+MAX_URL_BATCH = 100
+URL_EXPIRES_IN = 1200
 KEY_CACHE_SECONDS = 1200
 MAX_KEY_CACHE = 20
 
@@ -141,6 +143,13 @@ def parse_link(value: str) -> MegaLink:
         selection_type = fragment_parts[1]
         selection_handle = fragment_parts[2]
     return MegaLink(parts[0], parts[1], key, selection_type, selection_handle)
+
+
+def extension_of(name: str) -> str:
+    dot = name.rfind(".")
+    if dot <= 0 or dot == len(name) - 1:
+        return ""
+    return name[dot + 1 :].lower()
 
 
 def select_node_key(node: dict, root_handle: str) -> str:
@@ -388,6 +397,135 @@ class MegaKeyResolver:
             raise MegaKeyError("That MEGA folder is too large.")
         log.info("mega_folder_nodes nodes=%s", len(nodes))
         return [node for node in nodes if isinstance(node, dict)]
+
+    async def _fetch_urls(self, link_handle: str, handles: list[str]) -> dict[str, str]:
+        urls: dict[str, str] = {}
+        for start in range(0, len(handles), MAX_URL_BATCH):
+            chunk = handles[start : start + MAX_URL_BATCH]
+            request_id = secrets.randbelow(999_999_999) + 1
+            url = f"{MEGA_API}?id={request_id}&n={quote(link_handle)}"
+            body = [{"a": "g", "g": 1, "n": handle, "ssl": 2} for handle in chunk]
+            timeout = aiohttp.ClientTimeout(total=30, connect=10, sock_read=30)
+            try:
+                async with self._session.post(
+                    url,
+                    json=body,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                    timeout=timeout,
+                ) as response:
+                    if response.status == 509:
+                        raise MegaKeyError("MEGA transfer quota is exhausted for this link.")
+                    if response.status != 200:
+                        log.error("mega_urls_failed status=%s", response.status)
+                        raise MegaKeyError("MEGA did not return the folder download links.")
+                    declared = int(response.content_length or 0)
+                    if declared > MAX_API_BYTES:
+                        raise MegaKeyError("MEGA returned too much data.")
+                    raw = await response.read()
+            except MegaKeyError:
+                raise
+            except TimeoutError as exc:
+                raise MegaKeyError("MEGA timed out. Try again.") from exc
+            except aiohttp.ClientError as exc:
+                log.error("mega_urls_unreachable error=%s", type(exc).__name__)
+                raise MegaKeyError("Could not reach MEGA. Try again.") from exc
+            if len(raw) > MAX_API_BYTES:
+                raise MegaKeyError("MEGA returned too much data.")
+            try:
+                payload = json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise MegaKeyError("MEGA returned an unreadable response.") from exc
+            if not isinstance(payload, list) or not payload:
+                raise MegaKeyError("MEGA returned an unreadable response.")
+            if isinstance(payload[0], int):
+                log.error("mega_urls_rejected code=%s", payload[0])
+                raise MegaKeyError("MEGA rejected the folder request.")
+            for handle, item in zip(chunk, payload, strict=False):
+                if not isinstance(item, dict):
+                    continue
+                download_url = item.get("g")
+                if isinstance(download_url, str) and download_url.startswith(("http://", "https://")):
+                    urls[handle] = download_url
+            log.info("mega_url_batch count=%s resolved=%s", len(chunk), len(urls))
+        return urls
+
+    def _cache_entries(
+        self,
+        token: bytes,
+        files: list[tuple[str, _Entry]],
+    ) -> None:
+        paths: dict[str, DownloadKey] = {}
+        handles: dict[str, DownloadKey] = {}
+        for path, entry in files:
+            if entry.key is None:
+                continue
+            paths[path] = entry.key
+            handles[entry.handle] = entry.key
+        self._cache_put(token, paths, handles)
+
+    async def folder_result(self, source_url: str) -> dict:
+        link = parse_link(source_url)
+        if link.kind != "folder":
+            raise MegaKeyError("That is not a MEGA folder link.")
+        nodes = await self._fetch_nodes(link.handle)
+        key = folder_key(link.key)
+        public_root = find_public_root(nodes)
+        start_handle = link.selection_handle if link.selection_type == "folder" else None
+        root = find_folder_root(nodes, start_handle)
+        entries = build_entries(nodes, key, public_root, root)
+        root_entry = entries.get(root["h"])
+        if root_entry is None:
+            raise MegaKeyError("MEGA did not return the folder contents.")
+        token = self._cache_token(link)
+        if link.selection_type == "file":
+            entry = entries.get(link.selection_handle or "")
+            if entry is None or entry.is_folder or entry.key is None:
+                raise MegaKeyError("That MEGA file is no longer available.")
+            urls = await self._fetch_urls(link.handle, [entry.handle])
+            download_url = urls.get(entry.handle)
+            if download_url is None:
+                raise MegaKeyError("MEGA did not return a download link.")
+            self._cache_put(token, {entry.name: entry.key}, {entry.handle: entry.key})
+            log.info("mega_folder_result kind=file")
+            return {
+                "kind": "file",
+                "name": entry.name,
+                "size": entry.size,
+                "ext": extension_of(entry.name),
+                "url": download_url,
+                "expires_in": URL_EXPIRES_IN,
+            }
+        files = walk_files(root_entry)
+        urls = await self._fetch_urls(link.handle, [entry.handle for _, entry in files])
+        total = sum(entry.size for _, entry in files)
+        output = []
+        for path, entry in files:
+            download_url = urls.get(entry.handle)
+            output.append(
+                {
+                    "path": path,
+                    "name": entry.name,
+                    "size": entry.size,
+                    "ext": extension_of(entry.name),
+                    "url": download_url,
+                    "expires_in": URL_EXPIRES_IN if download_url else None,
+                }
+            )
+        self._cache_entries(token, files)
+        log.info(
+            "mega_folder_result files=%s urls=%s handles=%s",
+            len(output),
+            len(urls),
+            len(files),
+        )
+        return {
+            "kind": "folder",
+            "name": root_entry.name,
+            "size": total,
+            "file_count": len(output),
+            "files": output,
+            "expires_in": URL_EXPIRES_IN,
+        }
 
     def _keys_from_nodes(self, nodes: list[dict], key: bytes, link: MegaLink) -> tuple[
         dict[str, DownloadKey], dict[str, DownloadKey]

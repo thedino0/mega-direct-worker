@@ -9,7 +9,7 @@ from aiogram.exceptions import TelegramNetworkError, TelegramUnauthorizedError
 
 from .config import ConfigError, load_config
 from .download import TRANSFER_TIMEOUT_SECONDS, Downloader, cleanup_temp_files
-from .handlers import DownloadGuard, router
+from .handlers import CancelRegistry, DownloadGuard, router
 from .media import MEDIA_MAX_BYTES
 from .mega_crypto import MegaKeyResolver
 from .menu import MenuStore
@@ -75,6 +75,7 @@ async def run() -> int:
     keys = MegaKeyResolver()
     menus = MenuStore()
     guard = DownloadGuard()
+    cancels = CancelRegistry()
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
     try:
@@ -86,6 +87,7 @@ async def run() -> int:
             keys=keys,
             menus=menus,
             guard=guard,
+            cancels=cancels,
         )
     finally:
         await keys.close()
