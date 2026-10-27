@@ -14,6 +14,7 @@ from .config import Config
 from .download import Downloader, DownloadError, DownloadExpired, safe_filename
 from .formatting import format_size
 from .media import send_media
+from .mega_crypto import DownloadKey, MegaKeyError, MegaKeyResolver
 from .menu import (
     Menu,
     MenuError,
@@ -140,6 +141,7 @@ async def fetch_with_progress(
     downloader: Downloader,
     file: MenuFile,
     status: Message,
+    key: DownloadKey,
 ) -> Path:
     progress = TransferProgress(status, "Downloading", file.size, edit_status)
     progress.start()
@@ -149,6 +151,7 @@ async def fetch_with_progress(
             file.name,
             file.size,
             on_progress=progress.update,
+            key=key,
         )
     finally:
         await progress.stop()
@@ -192,13 +195,19 @@ async def download_file(
     menu: Menu,
     file: MenuFile,
     status: Message,
+    keys: MegaKeyResolver,
 ) -> tuple[Path, MenuFile]:
     try:
-        path = await fetch_with_progress(downloader, file, status)
+        key = await keys.resolve(menu.source_url, file.path, file.name)
+    except MegaKeyError as exc:
+        log.error("mega_key_failed error=%s", type(exc).__name__)
+        raise DownloadError(str(exc)) from exc
+    try:
+        path = await fetch_with_progress(downloader, file, status, key)
     except DownloadExpired:
         log.info("download_expired")
         file = await refresh_file(worker, menus, menu, file, status)
-        path = await fetch_with_progress(downloader, file, status)
+        path = await fetch_with_progress(downloader, file, status, key)
     return path, file
 
 
@@ -303,6 +312,7 @@ async def on_pick(
     downloader: Downloader,
     worker: WorkerClient,
     guard: DownloadGuard,
+    keys: MegaKeyResolver,
 ) -> None:
     if not is_owner_callback(callback, config):
         await callback.answer()
@@ -349,6 +359,7 @@ async def on_pick(
             menu,
             file,
             status,
+            keys,
         )
         upload_size = path.stat().st_size
         await edit_status(status, f"Uploading {format_size(upload_size)}...")

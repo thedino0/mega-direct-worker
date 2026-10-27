@@ -1,6 +1,6 @@
 # MEGA Worker Bot Progress
 
-Last updated: 2026-10-26
+Last updated: 2026-10-27
 
 ## Phase 1 - Link resolution and file listing - complete
 
@@ -23,7 +23,7 @@ Last updated: 2026-10-26
 - Added automatic document fallback when Telegram rejects a media type or a file exceeds the media method limit.
 - Added a clear alert for files above the phase 2 limit.
 - Verified the picker, callback flow, pagination, over-limit alert, media method dispatch, document fallback, and temp cleanup with a fake local Bot API.
-- Verified real MEGA downloads through the worker for a 73 KB file and a 13.8 MB folder file, including video delivery and cleanup.
+- Verified real MEGA byte transfer through the worker for a 73 KB file and a 13.8 MB folder file; decryption was not applied until the later payload fix.
 - Verified no direct MEGA URLs, link keys, worker keys, or bot tokens appear in bot logs.
 - Static checks passed with `ruff` and `python -m compileall`.
 
@@ -58,3 +58,14 @@ Last updated: 2026-10-26
 - Added startup media-limit logging, per-upload size/suffix/limit diagnostics, and detailed video-probe failure messages.
 - Re-ran media dispatch, media fallback, and phase 3 progress tests successfully; static checks passed.
 - Real local Bot API confirmation for the reported 181 MB and 350 MB files still requires deployment and a process restart.
+
+## MEGA payload decryption fix - implemented
+
+- Confirmed the worker's download URL returns MEGA AES-CTR ciphertext; the bot was uploading encrypted bytes, which caused `0:00` videos, missing thumbnails, and unreadable documents.
+- Added `bot/mega_crypto.py` to parse the original link key, resolve folder node keys through the MEGA API, cache file keys, and derive the per-file AES key and nonce.
+- Added streaming AES-CTR decryption to `Downloader` before writing to the temp file.
+- Resolved decryption keys for single-file links, folder files, and folder `/file/<handle>` selections before download.
+- Verified a real 33,915,264-byte folder MP4 decrypts to a valid `ftyp` file and probes as a 266-second 1280x720 video with a JPEG thumbnail.
+- Verified the reported 136,803,541-byte MP4 decrypts and probes as a 730-second 1280x720 video with a JPEG thumbnail on the VPS.
+- Verified the full bot flow on the VPS with a fake Telegram API: real folder link, key resolution, decryption, 33 MB video upload, duration/thumbnail fields, and temp cleanup.
+- Existing synthetic media E2E fixtures use keyless fake links and must be updated before reuse.

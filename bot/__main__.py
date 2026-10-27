@@ -11,6 +11,7 @@ from .config import ConfigError, load_config
 from .download import TRANSFER_TIMEOUT_SECONDS, Downloader, cleanup_temp_files
 from .handlers import DownloadGuard, router
 from .media import MEDIA_MAX_BYTES
+from .mega_crypto import MegaKeyResolver
 from .menu import MenuStore
 from .worker import WorkerClient
 
@@ -71,6 +72,7 @@ async def run() -> int:
         )
     )
     downloader = Downloader(config, download_session)
+    keys = MegaKeyResolver()
     menus = MenuStore()
     guard = DownloadGuard()
     dispatcher = Dispatcher()
@@ -81,10 +83,12 @@ async def run() -> int:
             config=config,
             worker=worker,
             downloader=downloader,
+            keys=keys,
             menus=menus,
             guard=guard,
         )
     finally:
+        await keys.close()
         await worker.close()
         await downloader.close()
     return 0

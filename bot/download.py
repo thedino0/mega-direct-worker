@@ -7,8 +7,11 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import aiohttp
+from Crypto.Cipher import AES
+from Crypto.Util import Counter
 
 from .config import Config
+from .mega_crypto import DownloadKey
 
 log = logging.getLogger(__name__)
 CHUNK_SIZE = 256 * 1024
@@ -66,6 +69,8 @@ class Downloader:
         name: str,
         expected_size: int,
         on_progress: ProgressCallback | None = None,
+        *,
+        key: DownloadKey | None = None,
     ) -> Path:
         if expected_size > self._max:
             raise DownloadError("That file is too large.")
@@ -83,6 +88,11 @@ class Downloader:
             connect=15,
             sock_read=120,
         )
+        cipher = None
+        if key is not None:
+            counter = Counter.new(128, initial_value=key.nonce_int)
+            cipher = AES.new(key.aes_key, AES.MODE_CTR, counter=counter)
+        log.info("download_decrypt enabled=%s kind=%s", cipher is not None, key.kind if key else "none")
         try:
             async with self._session.get(url, timeout=timeout) as response:
                 if response.status in {401, 403, 404, 410}:
@@ -102,6 +112,8 @@ class Downloader:
                         written += len(chunk)
                         if written > self._max:
                             raise DownloadError("That file is too large.")
+                        if cipher is not None:
+                            chunk = cipher.decrypt(chunk)
                         handle.write(chunk)
                         if on_progress is not None:
                             await on_progress(written, total)
@@ -124,7 +136,12 @@ class Downloader:
             path.unlink(missing_ok=True)
             log.error("download_write_failed error=%s", type(exc).__name__)
             raise DownloadError("Could not save the downloaded file.") from exc
-        log.info("download_done bytes=%s seconds=%.1f", written, time.monotonic() - started)
+        log.info(
+            "download_done bytes=%s seconds=%.1f decrypt=%s",
+            written,
+            time.monotonic() - started,
+            cipher is not None,
+        )
         return path
 
     async def close(self) -> None:
